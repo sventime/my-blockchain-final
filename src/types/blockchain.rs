@@ -124,6 +124,7 @@ impl Blockchain {
 mod tests {
     use crate::types::TransactionData;
     use crate::utils::{create_account_tx, generate_random_account};
+    use ed25519_dalek::{Keypair, Signer};
 
     use super::*;
 
@@ -277,10 +278,13 @@ mod tests {
 
         let mut block = Block::new(None);
         block.set_nonce(1);
-        block.add_transaction(Transaction::new(TransactionData::MintInitialSupply {
-            to: "satoshi".to_string(),
-            amount: 100_000_000,
-        }));
+        block.add_transaction(Transaction::new(
+            TransactionData::MintInitialSupply {
+                to: "satoshi".to_string(),
+                amount: 100_000_000,
+            },
+            None,
+        ));
         assert_eq!(
             bc.append_block(block),
             Err("Error during executing transactions: Invalid account.".to_string())
@@ -291,16 +295,28 @@ mod tests {
     fn test_initial_supply_fails_if_not_genesis() {
         let bc = &mut Blockchain::new();
 
-        append_block(bc, 1);
-        let mut block = Block::new(None);
-        block.set_nonce(1);
-        block.add_transaction(Transaction::new(TransactionData::MintInitialSupply {
-            to: "satoshi".to_string(),
-            amount: 100_000_000,
-        }));
+        //TODO Task 2: Signature
+        let keypair = Keypair::generate(&mut rand::rngs::OsRng {});
+        let account_tx = Transaction::new(
+            TransactionData::CreateAccount("satoshi".to_string(), keypair.public),
+            None,
+        );
+
+        assert!(append_block_with_tx(bc, 1, vec![account_tx]).is_ok());
+
+        let mut tx = Transaction::new(
+            TransactionData::MintInitialSupply {
+                to: "satoshi".to_string(),
+                amount: 100_000_000,
+            },
+            Some("satoshi".to_string()),
+        );
+        //TODO Task 2: Signature
+        tx.add_signature(keypair.sign(tx.hash().as_bytes()).to_bytes());
+
         assert_eq!(
-            bc.append_block(block),
-            Err("Error during executing transactions: Initial Supply can be minted only in genesis block".to_string())
+            append_block_with_tx(bc, 2, vec![tx]).err().unwrap(),
+            "Error during executing transactions: Initial Supply can be minted only in genesis block".to_string()
         );
     }
 
@@ -311,10 +327,13 @@ mod tests {
         let mut block = Block::new(None);
         block.set_nonce(1);
         block.add_transaction(create_account_tx("satoshi".to_string()));
-        block.add_transaction(Transaction::new(TransactionData::MintInitialSupply {
-            to: "satoshi".to_string(),
-            amount: 100_000_000,
-        }));
+        block.add_transaction(Transaction::new(
+            TransactionData::MintInitialSupply {
+                to: "satoshi".to_string(),
+                amount: 100_000_000,
+            },
+            None,
+        ));
         assert!(bc.append_block(block).is_ok());
 
         let account = bc.get_account_by_id(&"satoshi".to_string());
@@ -324,27 +343,41 @@ mod tests {
 
     #[test]
     fn test_transfer() {
-        let mut bc = Blockchain::new();
+        let bc = &mut Blockchain::new();
 
-        let mut block = Block::new(None);
-        block.set_nonce(1);
-        block.add_transaction(create_account_tx("satoshi".to_string()));
-        block.add_transaction(Transaction::new(TransactionData::MintInitialSupply {
-            to: "satoshi".to_string(),
-            amount: 100_000_000,
-        }));
-        assert!(bc.append_block(block).is_ok());
+        let keypair = Keypair::generate(&mut rand::rngs::OsRng {});
+        let account_tx = Transaction::new(
+            TransactionData::CreateAccount("satoshi".to_string(), keypair.public),
+            None,
+        );
+        assert!(append_block_with_tx(
+            bc,
+            1,
+            vec![
+                account_tx,
+                Transaction::new(
+                    TransactionData::MintInitialSupply {
+                        to: "satoshi".to_string(),
+                        amount: 100_000_000,
+                    },
+                    None,
+                )
+            ]
+        )
+        .is_ok());
 
-        block = Block::new(bc.get_last_block_hash());
-        block.set_nonce(2);
-        block.add_transaction(create_account_tx("alice".to_string()));
-        let mut tx = Transaction::new(TransactionData::Transfer {
-            to: "alice".to_string(),
-            amount: 10,
-        });
-        tx.set_from("satoshi".to_string());
-        block.add_transaction(tx);
-        assert!(bc.append_block(block).is_ok());
+        let mut tx = Transaction::new(
+            TransactionData::Transfer {
+                to: "alice".to_string(),
+                amount: 10,
+            },
+            Some("satoshi".to_string()),
+        );
+        tx.add_signature(keypair.sign(tx.hash().as_bytes()).to_bytes());
+
+        assert!(
+            append_block_with_tx(bc, 2, vec![create_account_tx("alice".to_string()), tx]).is_ok()
+        );
 
         let satoshi = bc.get_account_by_id(&"satoshi".to_string());
         let alice = bc.get_account_by_id(&"alice".to_string());
@@ -356,24 +389,36 @@ mod tests {
     fn test_transfer_fails() {
         let bc = &mut Blockchain::new();
 
-        append_block_with_tx(
+        let keypair = Keypair::generate(&mut rand::rngs::OsRng {});
+        let tx = Transaction::new(
+            TransactionData::CreateAccount("satoshi".to_string(), keypair.public),
+            None,
+        );
+
+        assert!(append_block_with_tx(
             bc,
             1,
             vec![
-                create_account_tx("satoshi".to_string()),
-                Transaction::new(TransactionData::MintInitialSupply {
-                    to: "satoshi".to_string(),
-                    amount: 100_000_000,
-                }),
+                tx,
+                Transaction::new(
+                    TransactionData::MintInitialSupply {
+                        to: "satoshi".to_string(),
+                        amount: 100_000_000,
+                    },
+                    None,
+                ),
             ],
         )
-        .unwrap();
+        .is_ok());
 
-        let mut tx = Transaction::new(TransactionData::Transfer {
-            to: "alice".to_string(),
-            amount: 100_000_001,
-        });
-        tx.set_from("satoshi".to_string());
+        let mut tx = Transaction::new(
+            TransactionData::Transfer {
+                to: "alice".to_string(),
+                amount: 100_000_001,
+            },
+            Some("satoshi".to_string()),
+        );
+        tx.add_signature(keypair.sign(tx.hash().as_bytes()).to_bytes());
         assert_eq!(
             append_block_with_tx(bc, 2, vec![create_account_tx("alice".to_string()), tx],)
                 .err()
@@ -381,11 +426,14 @@ mod tests {
             String::from("Error during executing transactions: Insufficient balance")
         );
 
-        let mut tx = Transaction::new(TransactionData::Transfer {
-            to: "invalid_address".to_string(),
-            amount: 10,
-        });
-        tx.set_from("satoshi".to_string());
+        let mut tx = Transaction::new(
+            TransactionData::Transfer {
+                to: "invalid_address".to_string(),
+                amount: 10,
+            },
+            Some("satoshi".to_string()),
+        );
+        tx.add_signature(keypair.sign(tx.hash().as_bytes()).to_bytes());
         assert_eq!(
             append_block_with_tx(bc, 2, vec![create_account_tx("alice".to_string()), tx],)
                 .err()
@@ -393,22 +441,60 @@ mod tests {
             String::from("Error during executing transactions: Invalid receiver address.")
         );
 
-        let mut tx = Transaction::new(TransactionData::Transfer {
-            to: "alice".to_string(),
-            amount: 10,
-        });
-        tx.set_from("invalid_address".to_string());
+        let mut tx = Transaction::new(
+            TransactionData::Transfer {
+                to: "alice".to_string(),
+                amount: 10,
+            },
+            Some("invalid_address".to_string()),
+        );
+        tx.add_signature(keypair.sign(tx.hash().as_bytes()).to_bytes());
         assert_eq!(
-            append_block_with_tx(bc, 2, vec![create_account_tx("alice".to_string()), tx],)
+            append_block_with_tx(bc, 2, vec![create_account_tx("alice".to_string()), tx])
                 .err()
                 .unwrap(),
-            String::from("Error during executing transactions: Invalid sender address.")
+            String::from("Error during executing transactions: Account `from` not exist.")
         );
     }
 
-    // #[test]
-    // fn test_sign_transaction() {
-    //     let mut rng = OsRng {};
-    //     let keypair = Keypair::generate(&mut rng);
-    // }
+    //TODO Task 2: Signature
+    #[test]
+    fn test_sign_transaction() {
+        let bc = &mut Blockchain::new();
+
+        let keypair = Keypair::generate(&mut rand::rngs::OsRng {});
+        let account_tx = Transaction::new(
+            TransactionData::CreateAccount("satoshi".to_string(), keypair.public),
+            None,
+        );
+
+        assert!(append_block_with_tx(
+            bc,
+            1,
+            vec![
+                account_tx,
+                Transaction::new(
+                    TransactionData::MintInitialSupply {
+                        to: "satoshi".to_string(),
+                        amount: 100_000_000,
+                    },
+                    Some("satoshi".to_string()),
+                ),
+            ],
+        )
+        .is_ok());
+
+        let mut tx = Transaction::new(
+            TransactionData::Transfer {
+                to: "alice".to_string(),
+                amount: 100,
+            },
+            Some("satoshi".to_string()),
+        );
+        tx.add_signature(keypair.sign(tx.hash().as_bytes()).to_bytes());
+
+        assert!(
+            append_block_with_tx(bc, 2, vec![create_account_tx("alice".to_string()), tx]).is_ok()
+        );
+    }
 }

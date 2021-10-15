@@ -10,7 +10,10 @@ pub fn create_mint_initial_supply_tx(to: AccountId, amount: Balance) -> Transact
 
 pub fn create_account_tx(account_id: String) -> Transaction {
     let keypair = Keypair::generate(&mut OsRng {});
-    Transaction::new(TransactionData::CreateAccount(account_id, keypair.public))
+    Transaction::new(
+        TransactionData::CreateAccount(account_id, keypair.public),
+        None,
+    )
 }
 
 pub fn generate_random_account() -> AccountId {

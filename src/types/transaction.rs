@@ -1,10 +1,10 @@
 use blake2::{Blake2s, Digest};
-use ed25519_dalek::PublicKey;
+use ed25519_dalek::{PublicKey, Verifier};
 
 use crate::traits::{Hashable, WorldState};
 use crate::types::{AccountId, AccountType, Balance, Error, Hash, Signature, Timestamp};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TransactionData {
     CreateAccount(AccountId, PublicKey),
     Transfer { to: AccountId, amount: Balance },
@@ -16,24 +16,14 @@ pub struct Transaction {
     nonce: u128,
     timestamp: Timestamp,
     pub(crate) data: TransactionData,
-    pub(crate) from: AccountId,
+    pub(crate) from: Option<AccountId>,
     signature: Option<Signature>,
 }
 
 impl Hashable for Transaction {
     fn hash(&self) -> Hash {
         hex::encode(Blake2s::digest(
-            format!(
-                "{:?}",
-                (
-                    self.nonce,
-                    self.timestamp,
-                    &self.data,
-                    &self.from,
-                    &self.signature
-                )
-            )
-            .as_bytes(),
+            format!("{:?}", (self.nonce, self.timestamp, &self.data, &self.from)).as_bytes(),
         ))
     }
 }
@@ -103,18 +93,18 @@ fn transfer<T: WorldState>(
 }
 
 impl Transaction {
-    pub fn new(data: TransactionData) -> Self {
+    pub fn new(data: TransactionData, from: Option<AccountId>) -> Self {
         Self {
             nonce: 0,
             timestamp: 0,
             data,
-            from: "".to_string(),
+            from,
             signature: None,
         }
     }
 
     pub fn set_from(&mut self, from: AccountId) {
-        self.from = from
+        self.from = Some(from)
     }
 
     //TODO Task 2: Signature
@@ -124,8 +114,8 @@ impl Transaction {
 
     pub fn execute<T: WorldState>(&self, state: &mut T, is_genesis: bool) -> Result<(), Error> {
         //TODO Task 2: Signature
-        if !is_genesis {
-            if let Err(error) = self.check_signature() {
+        if !is_genesis && !matches!(self.data, TransactionData::CreateAccount(_, _)) {
+            if let Err(error) = self.check_signature(state) {
                 return Err(error);
             }
         }
@@ -138,14 +128,38 @@ impl Transaction {
             }
             TransactionData::Transfer { to, amount } => {
                 //TODO Task 1: Transfer
-                transfer(state, self.from.clone(), to.clone(), *amount)
+                transfer(state, self.from.clone().unwrap(), to.clone(), *amount)
             }
         }
     }
 
-    fn check_signature(&self) -> Result<(), Error> {
+    fn check_signature<T: WorldState>(&self, state: &mut T) -> Result<(), Error> {
         //TODO Task 2: Signature
-        Ok(())
+        if self.signature.is_none() {
+            return Err("Signature is missing.".to_string());
+        }
+        self.from
+            .clone()
+            .map_or(Err("Tx `from` is not defined.".to_string()), |from| {
+                state.get_account_by_id(&from).map_or(
+                    Err("Account `from` not exist.".to_string()),
+                    |account| {
+                        dbg!(self.hash());
+                        if account
+                            .public_key
+                            .verify(
+                                self.hash().as_bytes(),
+                                &ed25519_dalek::Signature::from(self.signature.unwrap()),
+                            )
+                            .is_err()
+                        {
+                            Err("Invalid signature.".to_string())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                )
+            })
     }
 }
 
@@ -159,10 +173,10 @@ mod tests {
     #[test]
     fn test_tx_hash_changed() {
         let keypair = Keypair::generate(&mut OsRng {});
-        let mut tx = Transaction::new(TransactionData::CreateAccount(
-            "alice".to_string(),
-            keypair.public,
-        ));
+        let mut tx = Transaction::new(
+            TransactionData::CreateAccount("alice".to_string(), keypair.public),
+            None,
+        );
         let hash = tx.hash();
         tx.data = TransactionData::CreateAccount("bob".to_string(), keypair.public);
         let hast_new = tx.hash();

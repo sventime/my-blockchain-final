@@ -14,5 +14,5 @@ pub type Balance = u128;
 /// Millist sinse unix epoch
 pub type Timestamp = u128;
 pub type Hash = String;
-pub type Signature = Vec<u8>;
+pub type Signature = [u8; 64];
 pub type Error = String;
